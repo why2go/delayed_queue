@@ -42,9 +42,12 @@ func TestQ(t *testing.T) {
 	})
 
 	t.Run("DequeueSmoke", func(t *testing.T) {
-		msgs, err := Dequeue(context.Background(), client, queueID, 10)
+		msgs, err := Dequeue(context.Background(), client, queueID, 50)
 		assert.Empty(t, err)
 		assert.LessOrEqual(t, len(msgs), 10)
+		for i := range msgs {
+			fmt.Printf("msgs[%d]: %v\n", i, msgs[i])
+		}
 	})
 
 	t.Run("DequeueBulk", func(t *testing.T) {

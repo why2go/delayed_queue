@@ -3,6 +3,7 @@ package delayed_queue
 import (
 	"context"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -41,6 +42,10 @@ var (
 	isLoaded          bool
 )
 
+func ReloadScript() {
+	isLoaded = false
+}
+
 // 加载脚本到redis缓存
 func loadScript(ctx context.Context, client *redis.Client) error {
 	sc1 := client.ScriptLoad(ctx, enqueueScript)
@@ -67,7 +72,7 @@ func Enqueue(ctx context.Context, client *redis.Client, queueID string, msg stri
 			return err
 		}
 	}
-	c := client.EvalSha(ctx, enqueueScriptSha1, []string{queueID}, msg, delayedMs)
+	c := client.EvalSha(ctx, enqueueScriptSha1, []string{queueID}, genUniqueData(msg), delayedMs)
 	return c.Err()
 }
 
@@ -89,7 +94,19 @@ func Dequeue(ctx context.Context, client *redis.Client, queueID string, limit in
 		return nil, err
 	}
 	for i := range rets {
-		msgs = append(msgs, rets[i].(string))
+		msgs = append(msgs, extractOriginData(rets[i].(string)))
 	}
 	return msgs, nil
+}
+
+func genUniqueData(data string) string {
+	u := uuid.New()
+	return u.String() + data
+}
+
+func extractOriginData(uniqueData string) string {
+	if len(uniqueData) < 36 {
+		return uniqueData
+	}
+	return uniqueData[36:]
 }
