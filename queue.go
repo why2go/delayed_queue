@@ -39,55 +39,57 @@ return msgs
 var (
 	enqueueScriptSha1 string
 	dequeueScriptSha1 string
-	isLoaded          bool
 )
 
-func ReloadScript() {
-	isLoaded = false
+// 加载入队脚本到redis缓存
+func loadEnqueueScript(ctx context.Context, client *redis.Client) error {
+	sc := client.ScriptLoad(ctx, enqueueScript)
+	if sc.Err() != nil {
+		return sc.Err()
+	}
+	enqueueScriptSha1, _ = sc.Result()
+	return nil
 }
 
-// 加载脚本到redis缓存
-func loadScript(ctx context.Context, client *redis.Client) error {
-	sc1 := client.ScriptLoad(ctx, enqueueScript)
-	if sc1.Err() != nil {
-		return sc1.Err()
+// 加载出队脚本到redis缓存
+func loadDequeueScript(ctx context.Context, client *redis.Client) error {
+	sc := client.ScriptLoad(ctx, dequeueScript)
+	if sc.Err() != nil {
+		return sc.Err()
 	}
-	sc2 := client.ScriptLoad(ctx, dequeueScript)
-	if sc2.Err() != nil {
-		return sc2.Err()
-	}
-
-	enqueueScriptSha1, _ = sc1.Result()
-	dequeueScriptSha1, _ = sc2.Result()
-
-	isLoaded = true
+	dequeueScriptSha1, _ = sc.Result()
 	return nil
 }
 
 // 将一条消息msg放入到延时队列中，该消息的延时时间为delayedMs
 func Enqueue(ctx context.Context, client *redis.Client, queueID string, msg string, delayedMs int64) error {
-	if !isLoaded {
-		err := loadScript(ctx, client)
+	c := client.EvalSha(ctx, enqueueScriptSha1, []string{queueID}, genUniqueData(msg), delayedMs)
+	if c.Err() != nil && redis.HasErrorPrefix(c.Err(), "NOSCRIPT") {
+		err := loadEnqueueScript(ctx, client)
 		if err != nil {
 			return err
 		}
+		c = client.EvalSha(ctx, enqueueScriptSha1, []string{queueID}, genUniqueData(msg), delayedMs)
 	}
-	c := client.EvalSha(ctx, enqueueScriptSha1, []string{queueID}, genUniqueData(msg), delayedMs)
 	return c.Err()
 }
 
 // 拉取已经到期的消息
 func Dequeue(ctx context.Context, client *redis.Client, queueID string, limit int64) ([]string, error) {
-	if !isLoaded {
-		err := loadScript(ctx, client)
-		if err != nil {
-			return nil, err
-		}
-	}
 	var msgs []string = make([]string, 0, limit)
 	cmdResult := client.EvalSha(ctx, dequeueScriptSha1, []string{queueID}, limit)
 	if cmdResult.Err() != nil {
-		return nil, cmdResult.Err()
+		if redis.HasErrorPrefix(cmdResult.Err(), "NOSCRIPT") {
+			if err := loadDequeueScript(ctx, client); err != nil {
+				return nil, err
+			}
+			cmdResult = client.EvalSha(ctx, dequeueScriptSha1, []string{queueID}, limit)
+			if cmdResult.Err() != nil {
+				return nil, cmdResult.Err()
+			}
+		} else {
+			return nil, cmdResult.Err()
+		}
 	}
 	rets, err := cmdResult.Slice()
 	if err != nil {
