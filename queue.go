@@ -18,6 +18,7 @@ local dueTs = tsInMs + delayMs
 return redis.call('ZADD', key, dueTs, msg)
 	`
 
+	// ZRANGE BYSCORE 需要6.2才能支持
 	dequeueScript = `
 local key = KEYS[1]
 local limit = tonumber(ARGV[1])
@@ -37,64 +38,27 @@ return msgs
 )
 
 var (
-	enqueueScriptSha1 string
-	dequeueScriptSha1 string
+	enqueueRedisScript = redis.NewScript(enqueueScript)
+	dequeueRedisScript = redis.NewScript(dequeueScript)
 )
-
-// 加载入队脚本到redis缓存
-func loadEnqueueScript(ctx context.Context, client *redis.Client) error {
-	sc := client.ScriptLoad(ctx, enqueueScript)
-	if sc.Err() != nil {
-		return sc.Err()
-	}
-	enqueueScriptSha1, _ = sc.Result()
-	return nil
-}
-
-// 加载出队脚本到redis缓存
-func loadDequeueScript(ctx context.Context, client *redis.Client) error {
-	sc := client.ScriptLoad(ctx, dequeueScript)
-	if sc.Err() != nil {
-		return sc.Err()
-	}
-	dequeueScriptSha1, _ = sc.Result()
-	return nil
-}
 
 // 将一条消息msg放入到延时队列中，该消息的延时时间为delayedMs
 func Enqueue(ctx context.Context, client *redis.Client, queueID string, msg string, delayedMs int64) error {
-	c := client.EvalSha(ctx, enqueueScriptSha1, []string{queueID}, genUniqueData(msg), delayedMs)
-	if c.Err() != nil && redis.HasErrorPrefix(c.Err(), "NOSCRIPT") {
-		err := loadEnqueueScript(ctx, client)
-		if err != nil {
-			return err
-		}
-		c = client.EvalSha(ctx, enqueueScriptSha1, []string{queueID}, genUniqueData(msg), delayedMs)
-	}
+	c := enqueueRedisScript.Run(ctx, client, []string{queueID}, genUniqueData(msg), delayedMs)
 	return c.Err()
 }
 
 // 拉取已经到期的消息
 func Dequeue(ctx context.Context, client *redis.Client, queueID string, limit int64) ([]string, error) {
-	var msgs []string = make([]string, 0, limit)
-	cmdResult := client.EvalSha(ctx, dequeueScriptSha1, []string{queueID}, limit)
+	cmdResult := dequeueRedisScript.Run(ctx, client, []string{queueID}, limit)
 	if cmdResult.Err() != nil {
-		if redis.HasErrorPrefix(cmdResult.Err(), "NOSCRIPT") {
-			if err := loadDequeueScript(ctx, client); err != nil {
-				return nil, err
-			}
-			cmdResult = client.EvalSha(ctx, dequeueScriptSha1, []string{queueID}, limit)
-			if cmdResult.Err() != nil {
-				return nil, cmdResult.Err()
-			}
-		} else {
-			return nil, cmdResult.Err()
-		}
+		return nil, cmdResult.Err()
 	}
 	rets, err := cmdResult.Slice()
 	if err != nil {
 		return nil, err
 	}
+	var msgs []string = make([]string, 0, limit)
 	for i := range rets {
 		msgs = append(msgs, extractOriginData(rets[i].(string)))
 	}

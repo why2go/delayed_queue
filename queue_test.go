@@ -74,4 +74,19 @@ func TestQ(t *testing.T) {
 		}()
 		wg.Wait()
 	})
+
+	t.Run("Bin", func(t *testing.T) {
+		var err error
+		_, err = client.Set(context.Background(), "key1", []byte("hello\nworld"), 0).Result()
+		assert.Empty(t, err)
+
+		s, err2 := client.Get(context.Background(), "key1").Result()
+		assert.Empty(t, err2)
+		fmt.Println(s)
+	})
+}
+
+type Msg struct {
+	To   int
+	Text string
 }
